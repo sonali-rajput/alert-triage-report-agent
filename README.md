@@ -10,20 +10,29 @@ the day's ten most important issues, and a **triage agent** assigns each one a
 priority and explains why. The reasoning goes to BigQuery, the PDF report to a
 private GCS bucket, and a card with a signed link to Google Chat.
 
-```
-Cloud Scheduler --> start --> Cloud Run Job
-   08:00 daily               ├─ fetch Sentry issues + stack traces
-                             ├─ mask PII/secrets, drop known noise
-                             ├─ embed → BigQuery, VECTOR_SEARCH for similar history
-                             ├─ top-issues agent: dedup, rank, pick 10
-                             ├─ triage agent: priority + summary
-                             ├─ audit trail → BigQuery (every alert, selected or not)
-                             ├─ PDF → private GCS bucket → signed URL
-                             └─ Google Chat card
-```
+## Results & Demo
+
+The pipeline produces a comprehensive daily PDF report of the **top 10 issues** and alerts the team via Google Chat with a signed, time-limited URL to the bucket.
+
+<video src="./assets/demo.mp4" controls="controls" muted="muted" style="max-width: 100%;"></video>
+
+## Implementation
+
+Eleven stages, from Sentry fetch to Chat card, masking and noise filtering
+before anything reaches a model, then the two Gemini agents (top-issues, then
+triage) with BigQuery vector search feeding both.
+
+![Pipeline stages](./assets/pipelinestages.png)
+
+## Architecture
+
+Cloud Scheduler triggers one Cloud Run Job; BigQuery holds the embeddings and
+the audit trail, Secret Manager the Sentry and Chat credentials, and the PDF
+lands in a private GCS bucket served through a signed URL.
+
+![GCP architecture](./assets/gcparchitecture.png)
 
 ## Quick start
-
 
 ```bash
 python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
@@ -66,6 +75,14 @@ cd infra/bootstrap
 terraform init -backend-config=backend/dev.hcl
 terraform apply -var-file=envs/dev.tfvars
 ```
+
+## Pipeline Failure Modes
+
+If the AI skips an alert, that alert doesn't disappear. It shows up in the
+report marked *needs a human*. It's allowed to be wrong. It's not allowed to be
+silently wrong.
+
+![Pipeline failure modes](./assets/pipelinefail.png)
 
 ## Repository layout
 
