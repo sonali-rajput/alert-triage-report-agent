@@ -1,0 +1,97 @@
+# Data-masking rules applied by the pipeline BEFORE anything is archived or
+# sent to the LLM. Each rule is a regex and a replacement token.
+#
+# Precision matters as much as recall here: a hit on a credential rule is
+# treated as a security finding (it feeds the score's highest-weight signal
+# and the report's "applications logging secrets" callout), so a rule that
+# matches ordinary error prose creates false security findings, not just
+# over-masking.
+
+patterns:
+  - name: bearer-token
+    pattern: "(?i)bearer\\s+[a-z0-9._\\-]{8,}"
+    replacement: "Bearer [MASKED_TOKEN]"
+  - name: api-key-assignment
+    # The value must look like a secret: 8+ chars including a digit. Without
+    # that, ordinary prose like "Invalid token: expired" reads as a leaked
+    # credential. (Cost: an all-letter password assignment is missed; the
+    # env-var rule below still covers the SOMETHING_PASSWORD=... shape.)
+    pattern: "(?i)(api[_-]?key|token|secret|password|passwd|pwd)\\s*[:=]\\s*[\"']?(?=[^\\s\"',;]*\\d)[^\\s\"',;]{8,}"
+    replacement: "\\1=[MASKED]"
+  - name: gitlab-pat
+    pattern: "glpat-[A-Za-z0-9_\\-]{10,}"
+    replacement: "[MASKED_GITLAB_PAT]"
+  - name: aws-access-key
+    pattern: "AKIA[0-9A-Z]{16}"
+    replacement: "[MASKED_AWS_KEY]"
+  - name: connection-string-credentials
+    # `postgres://svc_user:s3cr3t@db-01:5432/prod`. Connection failures are
+    # bread-and-butter Sentry issues and the DSN goes straight into the error
+    # message, password included. The scheme and USERNAME are kept: knowing it
+    # was `svc_user` and not `readonly` is most of the debugging value, and the
+    # username is not the secret.
+    pattern: "(?i)\\b([a-z][a-z0-9+.\\-]*)://([^:/\\s@]{1,64}):([^@/\\s]{1,128})@"
+    replacement: "\\1://\\2:[MASKED]@"
+  - name: jwt
+    # `eyJ` is base64 of `{"`, so a three-segment token starting with it is a
+    # JWT and essentially nothing else. Common in auth errors, and the payload
+    # segment routinely carries a user id or email.
+    pattern: "\\beyJ[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{4,}"
+    replacement: "[MASKED_JWT]"
+  - name: private-key-block
+    # If this ever fires it is the most serious finding the pipeline can make.
+    pattern: "-----BEGIN [A-Z ]*PRIVATE KEY-----[A-Za-z0-9+/=\\s]*(-----END [A-Z ]*PRIVATE KEY-----)?"
+    replacement: "[MASKED_PRIVATE_KEY]"
+  - name: prefixed-vendor-token
+    # Slack, GitHub and Google keys carry their own prefixes, which makes them
+    # both easy to spot and impossible to confuse with prose.
+    pattern: "\\b(xox[baprs]-[A-Za-z0-9\\-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_\\-]{20,})"
+    replacement: "[MASKED_TOKEN]"
+  - name: url-signature
+    # Presigned URLs (S3, Azure SAS, GCS). The signature IS the credential --
+    # anyone holding the URL can read the object until it expires.
+    pattern: "(?i)([?&](?:x-amz-signature|signature|sig|sas|access_token|auth)=)[^&\\s\"']{8,}"
+    replacement: "\\1[MASKED]"
+  - name: session-identifier
+    # `sessionid=8f3ac91b...`. Not covered by the api-key rule, whose key list
+    # deliberately does not include session words -- a live session id is a
+    # credential for exactly as long as the session lasts.
+    pattern: "(?i)\\b(sessionid|session[_-]id|jsessionid|phpsessid)\\s*[:=]\\s*[\"']?[A-Za-z0-9._\\-]{8,}"
+    replacement: "\\1=[MASKED]"
+  - name: email-address
+    pattern: "[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}"
+    replacement: "[MASKED_EMAIL]"
+  - name: home-directory-path
+    # A username in a filesystem path. Found by projecting a real captured
+    # event into a fixture: the frame was
+    # `/home/<person>/src/app/db.py`, and nothing here caught it.
+    #
+    # This matters more since the rework than it did before. Stack traces used
+    # to be fetched for the top 15 issues by score; now every issue gets one,
+    # so every developer's home path in every trace goes to Vertex AI and into
+    # BigQuery. On a studio's own machines that is a colleague's name.
+    #
+    # The path SHAPE is kept -- `/home/[MASKED_USER]/src/app/db.py` still tells
+    # an engineer where the code lives, which is the whole reason the frame is
+    # in the prompt. Deliberately NOT a credential rule: a home path is
+    # personal data, not a leaked secret, and treating it as one would fire the
+    # report's "applications logging secrets" callout on ordinary traces.
+    pattern: "(?i)(/home/|/Users/|[A-Z]:\\\\Users\\\\|\\\\\\\\[^\\\\\\s]{1,64}\\\\[Uu]sers\\\\)[^/\\\\\\s:'\"]+"
+    replacement: "\\1[MASKED_USER]"
+  - name: ipv4-address
+    pattern: "\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"
+    replacement: "[MASKED_IP]"
+  - name: env-var-secretish
+    # Case-sensitive, and the secret word must be a full underscore-delimited
+    # segment of an UPPER_CASE name: DB_PASSWORD/API_KEY/TOKEN match;
+    # monkey=patch, TURKEY=... and MONKEY=... do not. The old case-insensitive
+    # substring match flagged any word merely containing "key" as a credential.
+    pattern: "\\b((?:[A-Z0-9]+_)*(?:SECRET|TOKEN|PASSWORD|PASSWD|PWD|KEY)(?:_[A-Z0-9]+)*)=\\S+"
+    replacement: "\\1=[MASKED]"
+
+# Stack traces / bodies longer than this many characters are truncated to
+# control LLM token costs. Head and tail are kept because both usually matter.
+truncation:
+  max_body_chars: 4000
+  keep_head_chars: 2500
+  keep_tail_chars: 1000

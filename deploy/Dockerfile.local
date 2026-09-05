@@ -1,0 +1,33 @@
+# LOCAL image — the production image plus everything needed to test it.
+#   docker build -f deploy/Dockerfile.local -t alert-triage:local .
+#
+# `FROM alert-triage:runtime` is the whole point. Local and production are not
+# two parallel builds that happen to look alike; local IS production with test
+# tooling layered on. A dependency that works here works there, because it is
+# the same layer underneath.
+#
+# Used by docker-compose.yml for `test`, `shell` and `chat`. The `triage`
+# service deliberately runs the PRODUCTION image instead, so a local run
+# exercises the artifact that actually ships.
+FROM alert-triage:runtime
+
+# The production image ships no pip: it is uninstalled from the venv there, so
+# ensurepip puts it back for this stage only.
+#
+# Then use `python -m pip`, never bare `pip`. ensurepip installs pip3 and
+# pip3.12 but NO bare `pip`, so `pip` falls through to /usr/local/bin/pip --
+# the SYSTEM interpreter, which cannot see /opt/venv and quietly installs a
+# second, duplicate copy of every dependency. That mistake cost 174 MB.
+RUN python -m ensurepip --upgrade
+
+COPY requirements.txt requirements-dev.txt ./
+RUN python -m pip install --no-cache-dir -r requirements-dev.txt
+
+COPY tests/ tests/
+COPY scripts/ scripts/
+COPY eval/ eval/
+COPY infra/ infra/
+COPY fixtures/ fixtures/
+COPY conftest.py pyproject.toml ./
+
+ENTRYPOINT ["python", "-m", "pytest", "-q"]

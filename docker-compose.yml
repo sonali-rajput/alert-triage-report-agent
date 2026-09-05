@@ -1,0 +1,87 @@
+# Local, offline, no GCP, no Sentry token.
+#
+# The point of running this in a container rather than in your venv: WeasyPrint
+# needs Pango and Cairo, which the image has and your laptop probably does not.
+# Outside the container the report silently falls back to HTML, so the PDF you
+# review is not the PDF the cloud produces.
+#
+#   docker compose build                    build both images (local needs prod)
+#   docker compose run --rm triage          one offline run -> ./artifacts
+#   docker compose run --rm test            the suite, against the local image
+#   docker compose up chat                  a fake Chat receiver on :8099
+#   docker compose run --rm shell           poke around
+#
+# Two images, on purpose:
+#   deploy/Dockerfile        production — runtime deps and app code only
+#   deploy/Dockerfile.local  the same image plus test tooling
+#
+# `triage` runs the PRODUCTION image, so a local run exercises the artifact
+# that actually ships. `test` runs the local one, because the production image
+# has no pytest in it — which is the point of separating them.
+
+x-offline: &offline
+  # The same env-var switches the Terraform sets for the deployed job, pointed
+  # at offline implementations instead.
+  SENTRY_SOURCE: fixture
+  SENTRY_FIXTURE_PATH: fixtures/sentry_org_issues_last_24h_anonymized.json
+  SENTRY_FIXTURE_DETAIL_PATH: fixtures/sentry_event_latest.sample.json
+  SENTRY_ENVIRONMENTS: production
+  LLM_PROVIDER: mock          # deterministic heuristic, no network, no cost
+  EMBEDDING_PROVIDER: hash    # lexical, not semantic -- plumbing only
+  STORE_BACKEND: local        # JSON files + a brute-force cosine scan
+  GCS_BUCKET: ""              # empty -> write the report to ./artifacts
+  CHAT_WEBHOOK_URL: ""        # set to http://chat:8099 to exercise the card
+  LOG_LEVEL: INFO
+
+services:
+  # --- the production artifact, run locally --------------------------------
+  triage:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: alert-triage:runtime
+    environment: *offline
+    volumes:
+      # The production image has no fixtures in it, so the offline run needs
+      # them mounted. That is the separation working as intended, not a
+      # workaround: fixtures are test data and do not belong in a shipped image.
+      - ./fixtures:/app/fixtures:ro
+      - ./artifacts:/app/artifacts
+      - ./.local_state:/app/.local_state
+    # Dedup compares against HISTORY, so a first run can never dedup anything.
+    # Run a second date to see that path do work:
+    #   docker compose run --rm triage --run-date 2026-08-24
+    command: ["--run-date", "2026-08-23"]
+
+  # --- production plus test tooling ----------------------------------------
+  test:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.local
+    image: alert-triage:local
+    environment: *offline
+    command: []
+
+  chat:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.local
+    image: alert-triage:local
+    entrypoint: ["python", "scripts/fake_chat_webhook.py", "--port", "8099",
+                 "--out-dir", "artifacts/chat"]
+    command: []
+    ports: ["8099:8099"]
+    volumes:
+      - ./artifacts:/app/artifacts
+
+  shell:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.local
+    image: alert-triage:local
+    environment: *offline
+    entrypoint: ["/bin/bash"]
+    command: []
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./.local_state:/app/.local_state

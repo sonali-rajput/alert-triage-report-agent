@@ -1,0 +1,12 @@
+# Everything the production image does NOT need.
+#
+# The split exists so deploy/Dockerfile ships runtime dependencies only: a test
+# runner in a production image is code you did not mean to run, in a container
+# with your service account attached.
+-r requirements.txt
+
+pytest>=8.2,<9
+pytest-cov>=5.0,<7
+ruff>=0.5,<1
+mypy>=1.10,<2
+types-PyYAML

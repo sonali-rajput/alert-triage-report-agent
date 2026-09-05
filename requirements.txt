@@ -1,0 +1,17 @@
+# Core
+pydantic>=2.7,<3
+pydantic-settings>=2.2,<3
+httpx>=0.27,<1
+tenacity>=8.3,<10
+PyYAML>=6.0,<7
+Jinja2>=3.1,<4
+
+# Report rendering (Cloud Run Job). No web framework: the job is a CLI that
+# runs once and exits, so FastAPI and uvicorn are gone.
+weasyprint>=62 ; sys_platform != "win32"
+
+# GCP integrations (used when deployed; lazily imported)
+google-genai>=1.0,<2
+google-cloud-bigquery>=3.20,<4
+google-cloud-storage>=2.16,<4
+google-auth>=2.29,<3

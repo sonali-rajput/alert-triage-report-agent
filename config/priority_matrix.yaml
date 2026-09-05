@@ -1,0 +1,155 @@
+# Rules injected into the two agent prompts. Prose, not numbers.
+#
+# This file used to carry a nine-weight scoring formula and four band
+# thresholds. It doesn't any more, and that is the design: the weights were an
+# arithmetic encoding of a judgement that was always textual, every threshold
+# was absolute so no weight could be changed without recalibrating all four,
+# and the end of the calculation was a translation back into the words
+# "high" and "critical". The rules below say the same thing in the form the
+# model actually reasons in -- and in a form the on-call engineer can read and
+# argue with. Edit this file to change behaviour; no code change is needed.
+
+team_context: >
+  The prodtools department at Framestore maintains internal production tools:
+  render farm submission, asset pipelines, studio-facing web tools and the
+  services behind them. Alerts come from Sentry (application errors) for the
+  department's services. The audience for the daily report is the prodtools
+  on-call engineer reading it at 08:00 with a coffee.
+
+# ---------------------------------------------------------------------------
+# Used by the top-issues agent (pipeline/agents/top_issues.py) to rank and
+# select the day's most important issues. Written in order of force.
+# ---------------------------------------------------------------------------
+selection_rules: >
+  RULE 1 -- People before volume. An error affecting many distinct users
+  outranks an error with a higher event count and few users. Ten thousand
+  events from one user is a retry loop; fifty events from fifty users is an
+  outage. When user_count is 0 for everything (some SDKs never report it),
+  fall back to event volume.
+
+  RULE 2 -- Production before everywhere else. An issue in production outranks
+  the same issue in staging, dev or local. An issue in a developer's local
+  environment is almost never top-10 material. An empty environment is unknown,
+  not safe -- judge it on its other signals.
+
+  RULE 3 -- Security beats severity. Anything suggesting credential exposure,
+  an authentication or authorization failure, a TLS or certificate failure, or
+  injection, belongs in the top issues even at low volume. A masking_hit like
+  'bearer-token' or 'aws-access-key' means the application is logging
+  credentials into its own error messages: that is a finding on its own, and it
+  outranks a noisier error with no security dimension.
+
+  RULE 4 -- New and worsening before steady. substatus 'new', 'regressed' or
+  'escalating' outranks 'ongoing'. A sharp rise in the final buckets of
+  hourly_events means it is happening right now and outranks the same total
+  spread evenly across the day. A long-lived error at a flat rate has already
+  been survived, whatever its lifetime count says.
+
+  RULE 5 -- Uncaught before handled. is_unhandled means nobody caught this and
+  a user very likely saw a failure. A handled, logged, retried error is a
+  smaller problem than an unhandled one with the same numbers.
+
+  RULE 6 -- Core services before peripheral ones. Render farm submission, asset
+  publishing, authentication and anything in the request path of a studio-facing
+  tool outrank scheduled jobs, internal dashboards and one-off scripts.
+
+  RULE 7 -- Prefer breadth. If two candidates are clearly the same underlying
+  failure, take ONE -- the one with the greater impact. The report is ten slots
+  wide, and repeating one incident in three of them costs the reader three
+  other things they should have seen.
+
+  You are not guessing at this. Each alert carries `similar_today`: the closest
+  OTHER alerts in this same run, with their cosine distance. Sentry groups
+  events into issues by a fingerprint derived from the stack trace, so one
+  failure routinely arrives as two or three separate issues -- a wrapped
+  exception, a second code path into the same bug, a rebuilt JS bundle. Those
+  arrive as separate rows and `similar_today` is how you see they are related.
+
+  Distances below about 0.05 are the same error text. Between 0.05 and 0.15 is
+  usually the same failure with different details. Same project plus a close
+  distance is a strong signal; a close distance across DIFFERENT projects is
+  usually two services failing for one shared reason, which is worth reporting
+  as one issue and saying so.
+
+  Judge it, do not apply the number mechanically. Two genuinely different bugs
+  can share boilerplate and read as close. When you are unsure, keep both: a
+  duplicated row wastes one slot, a wrongly-merged pair hides an issue.
+
+  Dropping a sibling here is NOT suppression -- it does not mark the alert a
+  duplicate and it still gets an audit row. It is a decision about report
+  slots, so say in `reason` which alert it duplicates.
+
+# ---------------------------------------------------------------------------
+# Used by the top-issues agent for the dedup call. There is no hash comparison
+# and no distance threshold anywhere in the pipeline: `distance` is evidence
+# handed to the model, not a rule applied behind its back.
+# ---------------------------------------------------------------------------
+dedup_guidance: >
+  Mark an alert as a duplicate when it is the same underlying failure as a
+  similar_past entry AND nothing about it has changed enough to need fresh
+  attention. Distances below about 0.1 are effectively the same error text;
+  0.1 to 0.25 usually means the same failure with different details (a
+  different file path, a different id in the message).
+
+  Do NOT mark it a duplicate -- surface it again -- when any of these hold,
+  however close the match:
+    * it has clearly escalated: many more users or events than the description
+      of the past occurrence suggests, or a substatus of 'regressed' or
+      'escalating';
+    * the past occurrence was triaged and the situation has since changed (it
+      was called low when it affected one user, and now it affects fifty);
+    * it is now happening in production and previously was not.
+
+  Two errors from the same service with a similar message but different root
+  causes are NOT duplicates. When you are unsure, do not mark it a duplicate:
+  a repeated report costs a reader ten seconds, a suppressed outage costs a
+  morning.
+
+# ---------------------------------------------------------------------------
+# Used by the triage agent (pipeline/agents/triage.py) to assign the final
+# priority to each of the selected issues. Written in order of force.
+# ---------------------------------------------------------------------------
+priority_rules: >
+  CRITICAL -- Someone has to act now, out of hours if necessary. A core
+  prodtools service is down or unusable; render farm submission is broken;
+  authentication is failing for everyone; data is being lost or corrupted;
+  credentials have leaked. Also critical: an error affecting a large share of
+  users at once, or one climbing steeply right now with no sign of levelling
+  off. If in doubt between critical and high, ask whether it is worth waking
+  someone for -- if not, it is high.
+
+  HIGH -- Needs attention today. Real user-facing impact but a workaround
+  exists, or the blast radius is one site, one team or one tool rather than
+  everyone. A new unhandled error in production. A failed production deploy.
+  An error whose volume is growing day over day. Any security-relevant finding
+  that is not an active breach.
+
+  MEDIUM -- Worth a ticket, not worth an interruption. Bugs with limited
+  impact, errors in non-critical paths, a scheduled job that failed and then
+  succeeded on retry, a known issue that has got slightly worse.
+
+  LOW -- Record it and move on. Cosmetic issues, deprecation warnings, errors
+  confined to dev or staging, single-occurrence errors with no user impact,
+  and long-lived errors at a flat rate that nobody has ever needed to act on.
+
+  A priority is about consequence, not about volume. A quiet error that loses
+  data is critical; a loud one that retries successfully is low.
+
+ignore_guidance: >
+  Ignore (decision: ignore) alerts that are pure noise: known flaky-test
+  failures, errors from local developer environments, bot and scanner traffic,
+  or issues explicitly labelled wontfix. Ignoring is rare at this stage --
+  these alerts have already been through a noise prefilter and been selected as
+  the day's most important, so an 'ignore' here means the earlier stages were
+  wrong about this one. When ignoring, always state the reason in the reasoning
+  field so it appears in the audit log.
+
+# NOTE: the `routing:` block is gone. Assigning an owning team was a second,
+# weaker judgement bolted onto a triage decision -- the model has no org chart,
+# and `routing` was the one field the response schema could not constrain to a
+# list of valid values, so an invented team name reached the report looking
+# exactly as authoritative as a real one. The report links straight to the
+# Sentry issue instead.
+
+# NOTE: automatic GitLab issue creation (the old `ticketing:` block) is deferred
+# along with GitLab as a second source. See ARCHITECTURE_CLOUD.md.

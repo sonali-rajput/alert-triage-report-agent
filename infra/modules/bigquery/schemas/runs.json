@@ -1,0 +1,9 @@
+[
+  { "name": "run_date",     "type": "DATE",    "mode": "REQUIRED" },
+  { "name": "run_id",       "type": "STRING",  "mode": "REQUIRED" },
+  { "name": "degraded",     "type": "BOOLEAN" },
+  { "name": "error",        "type": "STRING" },
+  { "name": "stats",        "type": "STRING" },
+  { "name": "pdf_url",      "type": "STRING" },
+  { "name": "completed_at", "type": "TIMESTAMP" }
+]

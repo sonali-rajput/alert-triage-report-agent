@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and local state
+.env
+*.json.key
+service-account*.json
+
+# Raw Sentry API dumps.
+sentry-payload-*.json
+sentry-*-response-*.json
+.sentry-capture/
+
+# Local artifacts
+artifacts/
+.local_state/
+.local_state_fixture/
+
+# Terraform. 
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+backend.hcl
+*.tfvars
+!*.tfvars.example
+
+# IDE
+.idea/
+.vscode/
+
+sentry-payload-issue-reposnse-output.json
+reports-real/
+.real-run-state.real-run-state/

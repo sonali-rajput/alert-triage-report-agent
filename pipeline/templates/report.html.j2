@@ -1,0 +1,304 @@
+{#
+  Daily triage report. Purely presentational: every list, count and delta is
+  computed in pipeline/pdf_report.py::build_sections. Keep it that way -- Jinja
+  is a bad place to compute anything, and the section data has tests.
+#}
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Daily Alert Triage Report — {{ run_date }}</title>
+<style>
+  @page { size: A4; margin: 1.4cm; @bottom-right { content: "Page " counter(page) " of " counter(pages); font-size: 8px; color: #6c6f85; } }
+  body { font-family: Helvetica, Arial, sans-serif; color: #1a1a2e; font-size: 10.5px; line-height: 1.4; }
+  h1 { font-size: 20px; margin-bottom: 2px; }
+  h2 { font-size: 13px; border-bottom: 2px solid #4a4e69; padding-bottom: 4px; margin-top: 20px; page-break-after: avoid; }
+  h3 { font-size: 11px; margin: 12px 0 4px; color: #4a4e69; page-break-after: avoid; }
+  .subtitle { color: #6c6f85; margin-top: 0; }
+  .lead { color: #6c6f85; font-size: 9.5px; margin: 2px 0 8px; }
+
+  .metrics { display: flex; gap: 8px; margin: 12px 0; }
+  .metric { flex: 1; background: #f4f4f8; border-radius: 6px; padding: 8px 10px; text-align: center; }
+  .metric .value { font-size: 19px; font-weight: bold; }
+  .metric .label { font-size: 8px; color: #6c6f85; text-transform: uppercase; letter-spacing: 0.05em; }
+  .metric .delta { font-size: 8.5px; color: #6c6f85; margin-top: 2px; }
+  .up { color: #d90429; } .down { color: #2a9d8f; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  th { text-align: left; background: #4a4e69; color: white; padding: 5px 7px; font-size: 9px; }
+  td { padding: 5px 7px; border-bottom: 1px solid #e0e0ea; vertical-align: top; }
+  tr { page-break-inside: avoid; }
+
+  .prio { font-weight: bold; padding: 2px 7px; border-radius: 10px; font-size: 8.5px; text-transform: uppercase; white-space: nowrap; }
+  .prio-critical { background: #d90429; color: white; }
+  .prio-high { background: #f77f00; color: white; }
+  .prio-medium { background: #fcbf49; color: #1a1a2e; }
+  .prio-low { background: #cfd8dc; color: #1a1a2e; }
+
+  .badge { font-size: 8px; padding: 1px 6px; border-radius: 8px; background: #e8e8f0; color: #4a4e69; white-space: nowrap; }
+  .badge-prod { background: #4a4e69; color: white; }
+  .badge-new { background: #2a9d8f; color: white; }
+  .badge-regressed { background: #d90429; color: white; }
+  .badge-escalating { background: #f77f00; color: white; }
+
+  .impact { font-weight: bold; white-space: nowrap; }
+  .reasoning { color: #4a4e69; font-style: italic; }
+  .meta { color: #6c6f85; font-size: 8.5px; }
+  .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 8.5px; }
+  /* The Sentry permalink is the report's handoff to a human, so it stays a
+     live link in the PDF -- word-break because these are long and must not
+     push the table wider than the page. */
+  .issue-link { color: #3b5bdb; text-decoration: none; word-break: break-all; }
+
+  .spark { display: inline-block; height: {{ sparkline_height }}px; white-space: nowrap; }
+  .spark i { display: inline-block; width: 3px; background: #4a4e69; margin-right: 1px; vertical-align: bottom; }
+
+  .callout { border-radius: 6px; padding: 8px 10px; margin: 8px 0; }
+  .danger { background: #fdecef; border: 1px solid #d90429; }
+  .warn { background: #fff3cd; border: 1px solid #f77f00; }
+  .ok { background: #eaf7f5; border: 1px solid #2a9d8f; }
+  .empty { color: #6c6f85; font-style: italic; padding: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Daily Alert Triage Report</h1>
+<p class="subtitle">prodtools · {{ run_date }} · run {{ run_id }}</p>
+
+{% if degraded %}
+<div class="callout warn"><strong>Degraded run:</strong> the AI triage stage failed and
+the team received a raw, unfiltered alert digest instead. The alerts below are listed
+without AI prioritization.</div>
+{% endif %}
+
+{#-------------------------------------------------- 1. Scorecard -----------#}
+<h2>1 · Scorecard</h2>
+<div class="metrics">
+  {% for key, label in [("ingested", "Ingested"), ("triaged", "Triaged"), ("critical", "Critical"), ("high", "High")] %}
+  {% set d = sections.scorecard[key] %}
+  <div class="metric">
+    <div class="value">{{ d.current }}</div>
+    <div class="label">{{ label }}</div>
+    <div class="delta">
+      {%- if d.change is none -%}
+        no history yet
+      {%- else -%}
+        <span class="{{ 'up' if d.change > 0 else ('down' if d.change < 0 else '') }}">{{ d.arrow }} {{ d.change | abs }}</span>
+        vs yesterday{% if d.average is not none %} · avg {{ "%.1f" | format(d.average) }}{% endif %}
+      {%- endif -%}
+    </div>
+  </div>
+  {% endfor %}
+  <div class="metric">
+    <div class="value">{{ "%.0f" | format(noise_ratio * 100) }}%</div>
+    <div class="label">Noise ratio</div>
+    <div class="delta">{{ stats.prefiltered }} filtered · {{ stats.deduped }} duplicate</div>
+  </div>
+</div>
+
+<table>
+  <tr><th style="width:80px">Priority</th><th>Count</th></tr>
+  {% for level in priorities %}
+  <tr>
+    <td><span class="prio prio-{{ level }}">{{ level }}</span></td>
+    <td>{{ stats.by_priority.get(level, 0) }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+{#--------------------------------------------- 2. Top issues ---------------#}
+<h2>2 · Today's top {{ sections.top_alerts | length }} issues</h2>
+<p class="lead">Most worth your attention first. Read in order.</p>
+{% if sections.top_alerts %}
+<table>
+  <tr>
+    <th style="width:34px">#</th><th style="width:70px">Priority</th><th>Alert</th>
+    <th style="width:88px">24h</th>
+  </tr>
+  {% for r in sections.top_alerts %}
+  <tr>
+    <td class="impact">{{ r.rank }}</td>
+    <td>
+      <span class="prio prio-{{ r.triage.priority.value }}">{{ r.triage.priority.value }}</span>
+      {% if r.disagreement %}<br><span class="meta">⚠ ranked high, triaged low</span>{% endif %}
+    </td>
+    <td>
+      <strong>{{ r.summary.title }}</strong><br>
+      <span class="meta">
+        <span class="badge {{ 'badge-prod' if r.environment == 'production' }}">{{ r.environment or 'unknown' }}</span>
+        {# The project does not affect an alert's priority -- ranking is issue
+           risk only -- but it is what tells a reader whether a critical alert
+           is theirs, so it reads at the same weight as the user count. #}
+        <strong>{{ r.project or 'unknown project' }}</strong> ·
+        <strong>{{ r.user_count }} users</strong> · {{ r.events_24h }} events
+        {%- if r.substatus in ("new", "regressed", "escalating") %} · <span class="badge badge-{{ r.substatus }}">{{ r.substatus }}</span>{% endif %}
+        {%- if r.is_unhandled %} · unhandled{% endif %}
+        {%- if r.ongoing_days > 1 %} · ongoing {{ r.ongoing_days }}d{% endif %}
+      </span><br>
+      {{ r.summary.summary }}<br>
+      <span class="reasoning">{{ r.triage.reasoning }}</span>
+      {# The link IS the handoff: this report says what broke and how bad it
+         is, and then sends the reader to the one place that can tell them
+         more. It replaced a model-guessed owning team. #}
+      {% if r.url %}<br><a class="issue-link mono" href="{{ r.url }}">{{ r.url }}</a>{% endif %}
+    </td>
+    <td>
+      {% set bars = sparkline(r.hourly_counts) %}
+      {% if bars %}<span class="spark">{% for b in bars %}<i style="height:{{ b.height }}px"></i>{% endfor %}</span>
+      {% else %}<span class="meta">no data</span>{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="empty">Nothing triaged today.</p>
+{% endif %}
+
+{#--------------------------------------------- 3. Security exposure --------#}
+<h2>3 · Security exposure</h2>
+
+{% if sections.credential_leaks %}
+<div class="callout danger">
+  <strong>{{ sections.leaking_projects | length }}
+  application{{ "" if sections.leaking_projects | length == 1 else "s" }}
+  ({{ sections.leaking_projects | join(", ") }})
+  {{ "is" if sections.leaking_projects | length == 1 else "are" }} logging sensitive data
+  into their own error messages</strong>, across {{ sections.credential_leaks | length }}
+  alert{{ "" if sections.credential_leaks | length == 1 else "s" }}. Redacted here, but the
+  application is still writing it to its own logs. Fix at the source.
+</div>
+<table>
+  <tr><th style="width:120px">Redacted</th><th>Alert</th><th style="width:96px">Project</th></tr>
+  {% for r in sections.credential_leaks %}
+  <tr>
+    <td><span class="badge">{{ r.masking_hits | join('</span> <span class="badge">') | safe }}</span></td>
+    <td>{{ r.summary.title }}</td>
+    <td>{{ r.project }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h3>Flagged security-relevant by triage ({{ sections.security | length }})</h3>
+{% if sections.security %}
+<table>
+  <tr><th style="width:70px">Priority</th><th>Alert</th><th>Why</th></tr>
+  {% for r in sections.security %}
+  <tr>
+    <td><span class="prio prio-{{ r.triage.priority.value }}">{{ r.triage.priority.value }}</span></td>
+    <td>{{ r.summary.title }}<br><span class="meta">{{ r.project }} · {{ r.environment or 'unknown' }}</span></td>
+    <td class="reasoning">{{ r.security_rationale or r.summary.suspected_cause }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="empty">No security-relevant alerts today.</p>
+{% endif %}
+
+{#--------------------------------------------- 4. By environment -----------#}
+<h2>4 · By environment</h2>
+<table>
+  <tr><th style="width:110px">Environment</th><th style="width:50px">Total</th>
+      <th style="width:60px">Critical</th><th style="width:50px">High</th><th>Top alert</th></tr>
+  {% for env, rs in sections.by_environment.items() %}
+  <tr>
+    <td><span class="badge {{ 'badge-prod' if env == 'production' }}">{{ env }}</span></td>
+    <td>{{ rs | length }}</td>
+    <td>{{ rs | selectattr("triage.priority.value", "equalto", "critical") | list | length }}</td>
+    <td>{{ rs | selectattr("triage.priority.value", "equalto", "high") | list | length }}</td>
+    <td>{{ rs[0].summary.title if rs else "—" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+{#--------------------------------------------- 5. What changed -------------#}
+<h2>5 · New · regressed · escalating</h2>
+<p class="lead">What is different since the last run, straight from Sentry's substatus.</p>
+{% set any_changed = sections.changed.values() | map('length') | sum %}
+{% if any_changed %}
+  {% for status, rs in sections.changed.items() %}
+    {% if rs %}
+    <h3><span class="badge badge-{{ status }}">{{ status }}</span> &nbsp;{{ rs | length }}</h3>
+    <table>
+      <tr><th style="width:70px">Priority</th><th>Alert</th><th style="width:150px">Impact</th></tr>
+      {% for r in rs %}
+      <tr>
+        <td><span class="prio prio-{{ r.triage.priority.value }}">{{ r.triage.priority.value }}</span></td>
+        <td>{{ r.summary.title }}<br><span class="meta">{{ r.project }} · {{ r.environment or 'unknown' }}</span></td>
+        <td class="meta">{{ r.user_count }} users · {{ r.events_24h }} events</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  {% endfor %}
+{% else %}
+<p class="empty">Nothing new, regressed or escalating today.</p>
+{% endif %}
+
+{#--------------------------------------------- 6. Ongoing offenders --------#}
+<h2>6 · Ongoing offenders</h2>
+<p class="lead">Seen {{ offender_days }}+ days running and still not resolved.</p>
+{% if sections.offenders %}
+<table>
+  <tr><th style="width:56px">Days</th><th style="width:70px">Priority</th><th>Alert</th></tr>
+  {% for r in sections.offenders %}
+  <tr>
+    <td class="impact">{{ r.ongoing_days }}</td>
+    <td><span class="prio prio-{{ r.triage.priority.value }}">{{ r.triage.priority.value }}</span></td>
+    <td>{{ r.summary.title }}<br><span class="meta">{{ r.project }} · {{ r.user_count }} users · {{ r.events_24h }} events</span>
+      {% if r.url %}<br><a class="issue-link mono" href="{{ r.url }}">{{ r.url }}</a>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="callout ok">No standing offenders — nothing has been left unresolved for
+{{ offender_days }}+ days.</div>
+{% endif %}
+
+{#--------------------------------------------- 7. Disagreements ------------#}
+<h2>7 · Selection vs. triage disagreements</h2>
+<p class="lead">Ranked high, then triaged low. Worth a glance — one of the two is wrong.</p>
+{% if sections.disagreements %}
+<table>
+  <tr><th style="width:34px">#</th><th style="width:76px">Selection says</th>
+      <th style="width:76px">Triage says</th><th>Alert</th><th>Triage reasoning</th></tr>
+  {% for r in sections.disagreements %}
+  <tr>
+    <td class="impact">{{ r.rank }}</td>
+    <td><span class="meta">top {{ r.rank }} today</span><br><span class="meta">{{ r.selection_reason }}</span></td>
+    <td><span class="prio prio-{{ r.triage.priority.value }}">{{ r.triage.priority.value }}</span></td>
+    <td>{{ r.summary.title }}<br><span class="meta">{{ r.project }} · {{ r.environment or 'unknown' }} · {{ r.user_count }} users</span></td>
+    <td class="reasoning">{{ r.triage.reasoning }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="callout ok">The two agents agreed on every alert.</div>
+{% endif %}
+
+{#--------------------------------------------- 8. Appendix -----------------#}
+<h2>8 · Appendix — everything triaged</h2>
+{% if sections.appendix %}
+<table>
+  <tr><th style="width:70px">Priority</th><th style="width:56px">Decision</th><th>Alert</th>
+      <th style="width:96px">Project</th><th style="width:88px">Environment</th></tr>
+  {% for r in sections.appendix %}
+  <tr>
+    <td><span class="prio prio-{{ r.triage.priority.value }}">{{ r.triage.priority.value }}</span></td>
+    <td class="meta">{{ r.triage.decision.value }}</td>
+    <td>{{ r.summary.title }}
+      {%- if r.triage.decision.value == "ignore" %}<br><span class="reasoning">{{ r.triage.reasoning }}</span>{% endif %}</td>
+    <td class="meta">{{ r.project }}</td>
+    <td class="meta">{{ r.environment or "unknown" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="empty">Nothing triaged today.</p>
+{% endif %}
+
+<p class="meta" style="margin-top:18px">Generated automatically. Summaries and priorities
+are LLM-generated — verify before acting on anything critical.</p>
+
+</body>
+</html>

@@ -1,0 +1,33 @@
+.env
+.sentry-capture/
+.real-run-state/
+.local_state*/
+reports-real/
+artifacts/
+
+.venv/
+venv/
+**/__pycache__/
+**/*.py[cod]
+
+# Local tooling state
+.git/
+.gitignore
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Terraform state and local backend config
+infra/**/.terraform/
+infra/**/*.tfstate*
+infra/**/backend.hcl
+infra/**/*.tfvars
+!infra/**/*.tfvars.example
+
+# Not needed at runtime
+docs/
+*.md
+!config/*.md
+

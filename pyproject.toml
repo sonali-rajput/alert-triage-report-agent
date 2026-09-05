@@ -1,0 +1,27 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+# Defaults (pyflakes + pycodestyle errors) plus import sorting and pyupgrade.
+select = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501",  # long lines: comments/docstrings carry the design rationale here
+    "UP042", # keep `str, Enum`: StrEnum changes str(x) from "Priority.low" to "low"
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["pipeline", "shared", "eval"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["google.*", "weasyprint.*"]
+ignore_missing_imports = true

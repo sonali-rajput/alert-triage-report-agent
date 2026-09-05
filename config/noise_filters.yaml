@@ -1,0 +1,29 @@
+# Pre-LLM noise filters applied by the collector. Alerts matching any rule are
+# dropped before they cost tokens. Patterns are case-insensitive regexes
+# matched against "<title> <body>".
+
+drop_patterns:
+  - name: flaky-known-test
+    pattern: "flaky.?test|known[ _-]flaky"
+  - name: bot-traffic
+    pattern: "user.?agent[:=].*(bot|crawler|spider)"
+  - name: healthcheck-noise
+    pattern: "GET /health(z|check)? .*(499|timeout)"
+
+# Alerts from these projects are always dropped (e.g. sandboxes).
+drop_projects:
+  - "playground"
+  - "sandbox"
+
+# Alerts from these environments are always dropped. This replaces the old
+# `dev-environment` regex, which guessed at the environment by looking for
+# "environment: dev" in the alert text. `environment` is now a real field,
+# stamped on by the per-environment Sentry query, so the check is exact.
+drop_environments:
+  - "development"
+  - "dev"
+  - "local"
+
+# Sentry issues with fewer events than this in the window are dropped,
+# unless their level is error/fatal.
+min_event_count: 1
