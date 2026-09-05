@@ -30,8 +30,6 @@ artifacts/
 *.tfstate.*
 crash.log
 backend.hcl
-*.tfvars
-!*.tfvars.example
 
 # IDE
 .idea/

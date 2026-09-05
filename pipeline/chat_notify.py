@@ -37,10 +37,8 @@ _PRIORITY_ICON = {
     Priority.high: "https://fonts.gstatic.com/s/i/googlematerialicons/warning/v13/gm_grey-24dp/1x/gm_warning_gm_grey_24dp.png",
 }
 
-# How many alerts are shown expanded, and how many more behind the fold. Eight
-# expanded rows was too many to scan; the rest is what the PDF is for.
+# How many alerts the card shows. Three, and then the report.
 VISIBLE_ALERTS = 3
-COLLAPSED_ALERTS = 5
 
 
 @retry(
@@ -169,23 +167,6 @@ def post_run_summary(
 
     if ranked:
         sections.append({"widgets": [_alert_widget(r) for r in ranked[:VISIBLE_ALERTS]]})
-        rest = ranked[VISIBLE_ALERTS : VISIBLE_ALERTS + COLLAPSED_ALERTS]
-        if rest:
-            # Collapsed rather than a second message: the space should stay at
-            # one card per day.
-            sections.append(
-                {
-                    "header": f"Next {len(rest)}",
-                    "collapsible": True,
-                    "uncollapsibleWidgetsCount": 0,
-                    "widgets": [_alert_widget(r) for r in rest],
-                }
-            )
-        remaining = len(ranked) - VISIBLE_ALERTS - len(rest)
-        if remaining > 0:
-            sections.append(
-                {"widgets": [{"decoratedText": {"text": f"<font color=\"#6c6f85\">…and {remaining} more in the report</font>"}}]}
-            )
     else:
         sections.append({"widgets": [{"decoratedText": {"text": "✅ No alerts require attention today."}}]})
 

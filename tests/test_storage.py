@@ -84,6 +84,53 @@ def test_the_url_lifetime_follows_the_setting():
     assert kwargs["expiration"].days == 3
 
 
+def test_on_cloud_run_it_signs_through_the_iam_api_rather_than_a_local_key():
+    """Cloud Run hands the container metadata credentials, which carry no
+    private key -- `generate_signed_url` raises before it ever attempts a
+    signature. Granting roles/iam.serviceAccountTokenCreator does not change
+    that on its own: the library only reaches for the IAM signBlob API when it
+    is handed the account email and a live token. Omitting them is what made a
+    deployed run log "could not sign a URL" and post a card with no PDF button
+    while every IAM binding looked correct.
+    """
+    import google.auth
+    from google.auth import credentials as ga_credentials
+
+    class MetadataCreds:                 # no Signing base == no private key
+        service_account_email = "triage-agent-sa@example.iam.gserviceaccount.com"
+        token = "ya29.fake"
+
+        def refresh(self, _request):
+            pass
+
+    assert not isinstance(MetadataCreds(), ga_credentials.Signing)
+
+    store, bucket = cloud_store()
+    store._owns_client = True            # what a configured GCS_BUCKET produces
+    original = google.auth.default
+    google.auth.default = lambda *a, **k: (MetadataCreds(), "proj")
+    try:
+        store.save_report("2026-08-11", b"x", "pdf")
+    finally:
+        google.auth.default = original
+
+    kwargs = bucket.blobs["reports/triage-report-2026-08-11.pdf"].sign_kwargs
+    assert kwargs["service_account_email"] == MetadataCreds.service_account_email
+    assert kwargs["access_token"] == "ya29.fake"
+
+
+def test_a_key_file_signs_locally_without_the_iam_detour():
+    """A service-account key file carries its own signer, so the email/token
+    arguments must NOT be sent -- they would route a signature that works
+    offline through an API call that needs a permission it does not need."""
+    store, bucket = cloud_store()        # _owns_client stays False: no client built
+    store.save_report("2026-08-11", b"x", "pdf")
+
+    kwargs = bucket.blobs["reports/triage-report-2026-08-11.pdf"].sign_kwargs
+    assert "service_account_email" not in kwargs
+    assert "access_token" not in kwargs
+
+
 def test_a_signing_failure_falls_back_to_the_gs_uri_rather_than_losing_the_run():
     """Signing needs the IAM signBlob permission (the job's SA over itself).
     Without it the report is still safely stored, so the run must continue —

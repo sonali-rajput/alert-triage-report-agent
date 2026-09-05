@@ -7,6 +7,9 @@ and dropped into the Google Chat card, which means an engineer needs no Google
 Cloud console access to read the morning report -- and someone who leaves the
 company loses access when the link expires rather than never.
 
+Signing on Cloud Run goes through the IAM signBlob API, not a private key --
+see `_signed_url`. The IAM binding alone is not enough to make it work.
+
 No Cloud CDN, no Identity-Aware Proxy. Both were considered and both are
 infrastructure for a problem this does not have: one PDF a day, read by a
 handful of people, all of them within a few hours of it being written.
@@ -33,6 +36,11 @@ class ArtifactStore:
         self._local_dir = Path(local_dir)
         self._signed_url_days = signed_url_days
         self._bucket = None
+        # True only when this instance built a real GCS client. The signing
+        # path consults google.auth, which must not happen when a test injects
+        # a fake bucket -- a unit test has no business reaching the metadata
+        # server or a developer's ADC.
+        self._owns_client = False
         if bucket:
             # Imported as a submodule, not `from google.cloud import storage`:
             # `google.cloud` is a namespace package, so what that form resolves
@@ -43,6 +51,7 @@ class ArtifactStore:
             import google.cloud.storage as storage
 
             self._bucket = storage.Client().bucket(bucket)
+            self._owns_client = True
 
     def save(self, path: str, data: bytes, content_type: str = "application/octet-stream") -> str:
         """Store an artifact; returns a signed GCS URL, or a local path offline."""
@@ -50,21 +59,63 @@ class ArtifactStore:
             blob = self._bucket.blob(path)
             blob.upload_from_string(data, content_type=content_type)
             try:
-                return blob.generate_signed_url(
-                    version="v4", expiration=timedelta(days=self._signed_url_days), method="GET"
+                return self._signed_url(blob)
+            except Exception as exc:
+                # Without a usable signer the report is still safely stored --
+                # only the link is missing -- so fall back to the gs:// URI
+                # rather than losing the run. The exception is in the message
+                # because the two causes (no key, no IAM permission) look
+                # identical from the outside and this is diagnosed weeks later.
+                logger.warning(
+                    "could not sign a URL for %s (%s: %s); returning the gs:// URI",
+                    path, type(exc).__name__, exc,
                 )
-            except Exception:
-                # Signing needs a private key or the IAM signBlob permission
-                # (roles/iam.serviceAccountTokenCreator on itself, which the
-                # Terraform grants). Without it the report is still safely
-                # stored -- only the link is missing -- so fall back to the
-                # gs:// URI rather than losing the run.
-                logger.warning("could not sign a URL for %s; returning the gs:// URI", path)
                 return f"gs://{self._bucket_name}/{path}"
         target = self._local_dir / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         return str(target.resolve())
+
+    def _signed_url(self, blob) -> str:
+        """A V4 signed URL, signing locally or through the IAM signBlob API.
+
+        `generate_signed_url` needs a private key. A service-account key file
+        has one; the credentials Cloud Run hands the container do NOT -- they
+        come from the metadata server, so the library raises before it ever
+        attempts a signature.
+
+        Granting `roles/iam.serviceAccountTokenCreator` is necessary but not
+        sufficient: the library only reaches for the IAM signBlob API when it
+        is given the account email and a live access token explicitly. Passing
+        them is what turns that Terraform binding into a working link.
+        """
+        kwargs: dict = {}
+        if self._owns_client:
+            import google.auth
+            import google.auth.transport.requests
+            from google.auth import credentials as ga_credentials
+
+            creds, _ = google.auth.default()
+            # Signing is the ABC for credentials that carry a key. Metadata
+            # credentials do not implement it; a key file does.
+            if not isinstance(creds, ga_credentials.Signing):
+                # The email is only populated from the metadata server by the
+                # refresh, so read it after. getattr because it lives on the
+                # compute-engine subclass, not the Credentials base -- and if
+                # it is genuinely absent there is nothing to sign with, so
+                # fall through and let the plain call raise into the caller's
+                # gs:// fallback.
+                creds.refresh(google.auth.transport.requests.Request())
+                email = getattr(creds, "service_account_email", None)
+                if email:
+                    kwargs = {"service_account_email": email, "access_token": creds.token}
+
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(days=self._signed_url_days),
+            method="GET",
+            **kwargs,
+        )
 
     def save_report(self, run_date: str, data: bytes, extension: str = "pdf") -> str:
         content_type = "application/pdf" if extension == "pdf" else "text/html"

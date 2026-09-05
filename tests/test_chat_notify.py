@@ -12,7 +12,6 @@ import pytest
 
 import pipeline.chat_notify as cn
 from pipeline.chat_notify import (
-    COLLAPSED_ALERTS,
     VISIBLE_ALERTS,
     _impact_line,
     post_error,
@@ -111,23 +110,24 @@ def test_shows_only_the_visible_count_expanded(posted):
     assert len(alert_section["widgets"]) == VISIBLE_ALERTS
 
 
-def test_the_next_few_are_collapsed_into_one_message(posted):
+def test_nothing_is_hidden_behind_a_fold(posted):
+    """The card used to carry a collapsible "Next 5". It asked the reader to
+    decide whether the rest was worth expanding, from a count -- the one piece
+    of information that cannot answer that. Three rows, then the report."""
     results = [ta(f"e{i}", rank=i + 1) for i in range(10)]
     post_run_summary(WEBHOOK, "2026-08-02", RunStats(), results)
-    collapsed = [s for s in card_of(posted[0])["sections"] if s.get("collapsible")]
-    assert len(collapsed) == 1
-    assert len(collapsed[0]["widgets"]) == COLLAPSED_ALERTS
-
-
-def test_the_remainder_is_pointed_at_the_report(posted):
-    results = [ta(f"e{i}", rank=i + 1) for i in range(VISIBLE_ALERTS + COLLAPSED_ALERTS + 4)]
-    post_run_summary(WEBHOOK, "2026-08-02", RunStats(), results)
-    assert "and 4 more in the report" in text_of(posted[0])
-
-
-def test_no_collapsed_section_when_everything_fits(posted):
-    post_run_summary(WEBHOOK, "2026-08-02", RunStats(), [ta("a"), ta("b")])
     assert not [s for s in card_of(posted[0])["sections"] if s.get("collapsible")]
+
+
+def test_the_remainder_is_never_counted_on_the_card(posted):
+    """"…and N more" is the same mistake in one line: a number the reader
+    cannot act on. The PDF button is how you see the rest."""
+    results = [ta(f"e{i}", rank=i + 1) for i in range(10)]
+    post_run_summary(WEBHOOK, "2026-08-02", RunStats(), results, pdf_url="https://x/r.pdf")
+    text = text_of(posted[0])
+    assert "more in the report" not in text
+    assert "Next" not in text
+    assert "Full report (PDF)" in text
 
 
 def test_quiet_day_says_so(posted):
