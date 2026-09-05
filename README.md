@@ -14,7 +14,7 @@ private GCS bucket, and a card with a signed link to Google Chat.
 
 The pipeline produces a comprehensive daily PDF report of the **top 10 issues** and alerts the team via Google Chat with a signed, time-limited URL to the bucket.
 
-<video src="./assets/demo.mp4" controls="controls" muted="muted" style="max-width: 100%;"></video>
+https://github.com/user-attachments/assets/affb4965-bd00-4acc-8ec4-d533f9923892
 
 ## Implementation
 
