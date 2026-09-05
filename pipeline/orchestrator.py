@@ -286,8 +286,17 @@ def execute_run(
         # A failure here costs the dedup signal, not the run: the agent sees no
         # neighbours and judges everything as new, which over-reports rather
         # than suppresses.
-        similar = store.similar_past(run_id, run_date)
-        siblings = store.similar_within_run(run_id)
+        # The thresholds come from the embedder, not from the store: they
+        # describe the vector space it produces, and the offline and real
+        # embedders' spaces are scaled very differently. Passing the store's
+        # own default would apply an offline-calibrated cut to real vectors,
+        # where it sits on the median.
+        similar = store.similar_past(
+            run_id, run_date, max_distance=embedder.neighbour_distance
+        )
+        siblings = store.similar_within_run(
+            run_id, max_distance=embedder.sibling_distance
+        )
     except Exception:
         logger.exception("run %s: embedding/vector search failed; continuing without history", run_id)
 

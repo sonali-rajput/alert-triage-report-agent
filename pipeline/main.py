@@ -80,7 +80,8 @@ def run_once(run_date: str, force: bool = False) -> RunResult:
             store=build_store(s.store_backend, s.gcp_project, s.bigquery_dataset),
             provider=_provider(),
             embedder=build_embedder(
-                s.embedding_provider, s.gcp_project, s.gcp_location, s.embedding_model
+                s.embedding_provider, s.gcp_project, s.gcp_location,
+                s.embedding_model, s.embedding_dimensions, s.gemini_api_key,
             ),
             artifacts=ArtifactStore(s.gcs_bucket, s.artifacts_dir, s.signed_url_days),
             masker=Masker(),

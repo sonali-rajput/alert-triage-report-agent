@@ -60,17 +60,35 @@ class PipelineSettings(BaseSettings):
     #          a real model; same prompts, same schemas, no GCP setup)
     # mock   - deterministic heuristic (tests, offline demo)
     llm_provider: str = "vertex"
-    # NOTE: the Developer API has retired gemini-2.5-flash for new keys
-    # (404 "no longer available to new users"); Vertex still serves it. With
-    # LLM_PROVIDER=gemini, set GEMINI_MODEL=gemini-3.5-flash.
-    gemini_model: str = "gemini-2.5-flash"
+    # gemini-3.5-flash, for two reasons that point the same way.
+    #
+    # 1. It is what was actually EVALUATED. Every real-model result this
+    #    project has -- 9/10 on the invariants, the groundedness and stability
+    #    runs, both end-to-end runs that produced the PDFs -- came from
+    #    3.5-flash. Deploying 2.5-flash would ship a model nothing was measured
+    #    against, which makes the evaluation evidence describe a different
+    #    system than the one running.
+    # 2. gemini-2.5-flash already 404s for new Developer API keys ("no longer
+    #    available to new users") and carries a retirement date. Vertex still
+    #    serves it today, but starting a new deployment on a model that is on
+    #    its way out is a migration scheduled for later.
+    gemini_model: str = "gemini-3.5-flash"
     gemini_api_key: str = ""
 
-    # vertex - text-embedding-004 through Vertex AI
+    # vertex - gemini-embedding-001 through Vertex AI
     # hash   - deterministic offline embedder (tests, offline demo). Not
     #          semantic: it matches text, not meaning.
-    embedding_provider: str = "vertex"  # vertex | hash
-    embedding_model: str = "text-embedding-004"
+    # vertex - Vertex AI via ADC (the deployed path)
+    # gemini - Gemini Developer API via GEMINI_API_KEY (the real model, no GCP)
+    # hash   - deterministic offline embedder (tests, offline demo)
+    embedding_provider: str = "vertex"  # vertex | gemini | hash
+    # gemini-embedding-001 -- gemini-embedding-001 is deprecated (Google told
+    # users to migrate by the end of October 2025).
+    embedding_model: str = "gemini-embedding-001"
+    # Matryoshka output width. Must match the BigQuery column, the offline
+    # HashEmbedder and every vector already stored: VECTOR_SEARCH cannot
+    # compare across widths. Changing it means re-embedding the history.
+    embedding_dimensions: int = 768
 
     # bigquery - the vector store, audit trail and run history (deployed)
     # local    - JSON files with a brute-force cosine scan (offline)

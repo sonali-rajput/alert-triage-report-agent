@@ -400,3 +400,40 @@ def test_a_sibling_search_failure_costs_the_signal_not_the_run(store, artifacts,
     result = run(store, artifacts)
     assert not result.degraded
     assert result.stats.processed == 2
+
+
+def test_the_embedders_thresholds_reach_the_store(store, artifacts, monkeypatch):
+    """The bug this prevents: applying an offline-calibrated distance cut to
+    real vectors. Measured on the same 19 alerts, the offline embedder's median
+    pair is 0.791 and gemini-embedding-001's is 0.352 — so the old shared 0.35
+    would have sat on the real model's median, offering half of every run's
+    pairs to the agent as 'similar'."""
+    seen = {}
+
+    class Narrow(HashEmbedder):
+        @property
+        def neighbour_distance(self):
+            return 0.111
+
+        @property
+        def sibling_distance(self):
+            return 0.222
+
+    real_past, real_sib = store.similar_past, store.similar_within_run
+
+    def spy_past(*a, **k):
+        seen["past"] = k.get("max_distance")
+        return real_past(*a, **k)
+
+    def spy_sib(*a, **k):
+        seen["sib"] = k.get("max_distance")
+        return real_sib(*a, **k)
+
+    monkeypatch.setattr(store, "similar_past", spy_past)
+    monkeypatch.setattr(store, "similar_within_run", spy_sib)
+
+    execute_run("2026-07-15", sentry=FakeSentry(sample_alerts()), store=store,
+                provider=MockProvider(), embedder=Narrow(), artifacts=artifacts)
+
+    assert seen["past"] == 0.111
+    assert seen["sib"] == 0.222

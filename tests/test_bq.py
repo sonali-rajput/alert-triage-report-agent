@@ -229,3 +229,27 @@ def test_siblings_are_capped_per_alert(store):
     store.insert_alerts("r1", "2026-07-15",
                         [row(f"a{i}", "r1", "2026-07-15", text) for i in range(6)])
     assert all(len(s) <= 2 for s in store.similar_within_run("r1", top_k=2).values())
+
+
+def test_the_caller_chooses_the_distance_cut(store):
+    """The store must not impose its own threshold: the embedder that produced
+    the vectors owns it, and the offline and real spaces are scaled very
+    differently."""
+    base = "ConnectionError could not reach internal-db-01 port 5432"
+    store.insert_alerts("r1", "2026-07-14", [row("old", "r1", "2026-07-14", base + " retry 2")])
+    store.insert_alerts("r2", "2026-07-16", [row("new", "r2", "2026-07-16", base)])
+
+    loose = store.similar_past("r2", "2026-07-16", max_distance=0.9)
+    tight = store.similar_past("r2", "2026-07-16", max_distance=0.001)
+    assert loose.get("new"), "a generous cut should surface the neighbour"
+    assert not tight.get("new"), "a tight cut should exclude it"
+
+
+def test_the_sibling_cut_is_the_callers_too(store):
+    text = "ConnectionError: could not reach internal-db-01"
+    store.insert_alerts("r1", "2026-07-15", [
+        row("a", "r1", "2026-07-15", text),
+        row("b", "r1", "2026-07-15", text + " on retry"),
+    ])
+    assert store.similar_within_run("r1", max_distance=0.9)
+    assert not store.similar_within_run("r1", max_distance=0.0001)

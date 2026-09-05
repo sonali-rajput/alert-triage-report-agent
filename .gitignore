@@ -39,4 +39,4 @@ backend.hcl
 
 sentry-payload-issue-reposnse-output.json
 reports-real/
-.real-run-state.real-run-state/
+.real-run-state/

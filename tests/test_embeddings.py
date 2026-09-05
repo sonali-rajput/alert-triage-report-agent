@@ -90,7 +90,8 @@ class StubEmbeddings:
         self.drop = drop  # return fewer vectors than inputs, as a broken API would
         self.batches: list[int] = []
 
-    def embed_content(self, model, contents):
+    def embed_content(self, model, contents, config=None):
+        self.config = config
         from types import SimpleNamespace
 
         self.batches.append(len(contents))
@@ -105,7 +106,8 @@ def vertex_over(stub: StubEmbeddings):
 
     e = VertexEmbedder.__new__(VertexEmbedder)  # skip __init__: it builds a real client
     e._client = SimpleNamespace(models=stub)
-    e._model = "text-embedding-004"
+    e._model = "gemini-embedding-001"
+    e._dimensions = EMBEDDING_DIM
     return e
 
 
@@ -137,3 +139,91 @@ def test_embedding_nothing_makes_no_api_call():
     stub = StubEmbeddings()
     assert vertex_over(stub).embed([]) == []
     assert stub.batches == []
+
+
+def test_the_configured_dimension_is_actually_requested():
+    """Matryoshka truncation is a request parameter, not a default. Without it
+    gemini-embedding-001 returns 3072 and every insert mismatches the column."""
+    stub = StubEmbeddings()
+    vertex_over(stub).embed(["one"])
+    assert stub.config is not None
+    assert stub.config.output_dimensionality == EMBEDDING_DIM
+
+
+def test_a_wrong_width_is_refused_rather_than_stored():
+    """The failure this guards is silent and expensive: a 3072-wide vector in a
+    768-wide column poisons the store, and VECTOR_SEARCH then fails every query
+    against it. Better to lose one run loudly."""
+    with pytest.raises(RuntimeError, match="3072-wide"):
+        vertex_over(StubEmbeddings(dims=3072)).embed(["one"])
+
+
+def test_the_default_model_is_not_the_deprecated_one():
+    """text-embedding-004 was deprecated with a migrate-by date of October 2025.
+    Pinning the name here means a silent revert shows up as a failed test."""
+    from pipeline.embeddings import DEFAULT_MODEL
+
+    assert DEFAULT_MODEL == "gemini-embedding-001"
+    assert "004" not in DEFAULT_MODEL
+
+
+def test_the_developer_api_transport_needs_a_key():
+    """Falling back to Vertex ADC would silently switch transports and bill a
+    project the caller did not mean to use."""
+    with pytest.raises(ValueError, match="requires GEMINI_API_KEY"):
+        build_embedder("gemini", "p", "l", api_key="")
+
+
+def test_both_transports_produce_the_same_shape():
+    """The point of the second transport: an AI Studio key exercises the real
+    production embedding call — same model, same truncation, same
+    normalisation — with no GCP project. Without it, 'does this model return
+    the width we asked for' could only be answered by deploying, and getting
+    it wrong writes unsearchable vectors into BigQuery."""
+    from pipeline.embeddings import VertexEmbedder
+
+    stub = StubEmbeddings()
+    e = VertexEmbedder.__new__(VertexEmbedder)
+    e._client = __import__("types").SimpleNamespace(models=stub)
+    e._model, e._dimensions = "gemini-embedding-001", EMBEDDING_DIM
+    assert len(e.embed(["x"])[0]) == EMBEDDING_DIM
+
+
+# --------------------------------------------------------------------------
+# Distance thresholds
+#
+# Calibrated on the same 19 real alerts. The two embedders' vector spaces are
+# scaled very differently — median pair 0.791 offline vs 0.352 for
+# gemini-embedding-001 — so a single shared constant is either far too loose
+# for one or far too tight for the other. Before the split, the offline-tuned
+# 0.35 sat almost exactly on the real model's MEDIAN.
+# --------------------------------------------------------------------------
+
+
+def test_each_embedder_carries_its_own_thresholds():
+    from pipeline.embeddings import VertexEmbedder
+
+    real = VertexEmbedder.__new__(VertexEmbedder)
+    offline = HashEmbedder()
+    assert real.neighbour_distance < offline.neighbour_distance
+    assert real.sibling_distance < offline.sibling_distance
+
+
+def test_the_sibling_cut_is_tighter_than_the_neighbour_cut():
+    """A same-run merge spends one report slot on two issues, so a wrong one
+    HIDES an alert. A missed historical duplicate only repeats a row."""
+    from pipeline.embeddings import VertexEmbedder
+
+    for e in (HashEmbedder(), VertexEmbedder.__new__(VertexEmbedder)):
+        assert e.sibling_distance < e.neighbour_distance
+
+
+def test_the_real_thresholds_sit_between_the_measured_bands():
+    """Measured on the real pull: same-incident pairs run 0.037–0.134, a
+    debatable band 0.146–0.176, then the unrelated mass from 0.297. The cuts
+    have to land in the gaps, not in the middle of a band."""
+    from pipeline.embeddings import VertexEmbedder
+
+    e = VertexEmbedder.__new__(VertexEmbedder)
+    assert 0.134 < e.sibling_distance < 0.146, "sibling cut must clear the clear pairs, stop before the debatable ones"
+    assert 0.176 < e.neighbour_distance < 0.297, "neighbour cut must clear the debatable band, stop before the unrelated mass"

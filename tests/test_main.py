@@ -170,3 +170,63 @@ def test_the_terraform_default_parses():
 
     settings = PipelineSettings(_env_file=None, sentry_environments=match.group(1))
     assert len(settings.sentry_environment_list) >= 1
+
+
+# --------------------------------------------------------------------------
+# Terraform / code agreement
+#
+# The Terraform sets these as environment variables on the Cloud Run Job, so a
+# value there SILENTLY OVERRIDES the code default. That is how the deployed
+# model came to be `gemini-3.6-flash` while every real-model result in this
+# project was measured against `gemini-3.5-flash` — an evaluation describing a
+# system that was not the one running.
+# --------------------------------------------------------------------------
+
+
+def _terraform_defaults() -> dict[str, str]:
+    """Parse `variable "x" { ... default = y }` out of the dev environment."""
+    import re
+    from pathlib import Path
+
+    text = Path("infra/environments/dev/variables.tf").read_text(encoding="utf-8")
+    found = {}
+    for block in re.finditer(r'variable\s+"(\w+)"\s*\{(.*?)\n\}', text, re.S):
+        name, body = block.group(1), block.group(2)
+        default = re.search(r'^\s*default\s*=\s*"?([^"\n]+?)"?\s*$', body, re.M)
+        if default:
+            found[name] = default.group(1).strip()
+    return found
+
+
+@pytest.mark.parametrize(
+    "tf_var,setting",
+    [
+        ("gemini_model", "gemini_model"),
+        ("embedding_model", "embedding_model"),
+        ("embedding_dimensions", "embedding_dimensions"),
+    ],
+)
+def test_terraform_defaults_match_the_code_defaults(tf_var, setting):
+    from pipeline.settings import PipelineSettings
+
+    tf = _terraform_defaults()
+    assert tf_var in tf, f"infra/environments/dev/variables.tf no longer defines {tf_var}"
+    expected = getattr(PipelineSettings(_env_file=None), setting)
+    assert str(tf[tf_var]) == str(expected), (
+        f"Terraform sets {tf_var}={tf[tf_var]!r} but the code defaults to {expected!r}. "
+        "The Terraform value wins at runtime, so the deployed job would use a model or "
+        "width that nothing here was tested against."
+    )
+
+
+def test_the_terraform_actually_passes_those_to_the_job():
+    """A variable nobody wires into the job's env is a variable that does
+    nothing, and the test above would still pass."""
+    from pathlib import Path
+
+    main = Path("infra/environments/dev/main.tf").read_text(encoding="utf-8")
+    for env_var, tf_var in [("GEMINI_MODEL", "gemini_model"),
+                            ("EMBEDDING_MODEL", "embedding_model"),
+                            ("EMBEDDING_DIMENSIONS", "embedding_dimensions")]:
+        assert f"var.{tf_var}" in main, f"{tf_var} is never used"
+        assert env_var in main, f"{env_var} is never set on the job"

@@ -57,6 +57,12 @@ DEFAULT_SIBLING_K = 2
 # it the model is being asked to compare an error against an unrelated one,
 # which invites a spurious duplicate call. This is a *display* threshold only
 # -- the duplicate decision itself is the model's, never a threshold's.
+# FALLBACKS ONLY. The real thresholds come from the embedder that produced the
+# vectors -- see Embedder.neighbour_distance -- because they are properties of
+# the vector space, and the two embedders' spaces are scaled very differently
+# (median pair 0.791 offline vs 0.352 for gemini-embedding-001 on the same 19
+# alerts). These defaults match the offline embedder so a caller that passes
+# nothing gets the old behaviour rather than a silent change.
 MAX_NEIGHBOUR_DISTANCE = 0.35
 # Tighter than the historical ceiling. A historical neighbour at 0.3 is useful
 # context ("we have seen something like this before"); a same-run sibling at 0.3
@@ -73,10 +79,12 @@ SELF_MATCH_PADDING = 8
 class TriageStore(Protocol):
     def insert_alerts(self, run_id: str, run_date: str, rows: list[dict[str, Any]]) -> None: ...
     def similar_past(
-        self, run_id: str, run_date: str, top_k: int = DEFAULT_TOP_K
+        self, run_id: str, run_date: str, top_k: int = DEFAULT_TOP_K,
+        max_distance: float = MAX_NEIGHBOUR_DISTANCE,
     ) -> dict[str, list[dict[str, Any]]]: ...
     def similar_within_run(
-        self, run_id: str, top_k: int = DEFAULT_SIBLING_K
+        self, run_id: str, top_k: int = DEFAULT_SIBLING_K,
+        max_distance: float = MAX_SIBLING_DISTANCE,
     ) -> dict[str, list[dict[str, Any]]]: ...
     def record_triage(self, rows: list[dict[str, Any]]) -> None: ...
     def record_run(self, run_date: str, data: dict[str, Any]) -> None: ...
@@ -135,7 +143,8 @@ class BigQueryStore:
     # -- reads --------------------------------------------------------------
 
     def similar_past(
-        self, run_id: str, run_date: str, top_k: int = DEFAULT_TOP_K
+        self, run_id: str, run_date: str, top_k: int = DEFAULT_TOP_K,
+        max_distance: float = MAX_NEIGHBOUR_DISTANCE,
     ) -> dict[str, list[dict[str, Any]]]:
         """Nearest historical alerts for every alert in this run.
 
@@ -181,7 +190,7 @@ class BigQueryStore:
             bigquery.ScalarQueryParameter("run_date", "DATE", run_date),
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
             bigquery.ScalarQueryParameter("padded_k", "INT64", top_k + SELF_MATCH_PADDING),
-            bigquery.ScalarQueryParameter("max_distance", "FLOAT64", MAX_NEIGHBOUR_DISTANCE),
+            bigquery.ScalarQueryParameter("max_distance", "FLOAT64", max_distance),
         ]
         out: dict[str, list[dict[str, Any]]] = {}
         for row in self._query(sql, params):
@@ -192,7 +201,8 @@ class BigQueryStore:
         return out
 
     def similar_within_run(
-        self, run_id: str, top_k: int = DEFAULT_SIBLING_K
+        self, run_id: str, top_k: int = DEFAULT_SIBLING_K,
+        max_distance: float = MAX_SIBLING_DISTANCE,
     ) -> dict[str, list[dict[str, Any]]]:
         """Nearest neighbours among the alerts of THIS run.
 
@@ -234,7 +244,7 @@ class BigQueryStore:
         params = [
             bigquery.ScalarQueryParameter("run_id", "STRING", run_id),
             bigquery.ScalarQueryParameter("padded_k", "INT64", top_k + SELF_MATCH_PADDING),
-            bigquery.ScalarQueryParameter("max_distance", "FLOAT64", MAX_SIBLING_DISTANCE),
+            bigquery.ScalarQueryParameter("max_distance", "FLOAT64", max_distance),
         ]
         out: dict[str, list[dict[str, Any]]] = {}
         for row in self._query(sql, params):
@@ -345,7 +355,8 @@ class LocalBQStore:
         self._append(RUNS_TABLE, [{**data, "run_date": run_date}])
 
     def similar_past(
-        self, run_id: str, run_date: str, top_k: int = DEFAULT_TOP_K
+        self, run_id: str, run_date: str, top_k: int = DEFAULT_TOP_K,
+        max_distance: float = MAX_NEIGHBOUR_DISTANCE,
     ) -> dict[str, list[dict[str, Any]]]:
         alerts = self._load(ALERTS_TABLE)
         verdicts = {(t.get("alert_id"), t.get("run_date")): t for t in self._load(TRIAGE_TABLE)}
@@ -357,7 +368,7 @@ class LocalBQStore:
             scored = []
             for past in history:
                 distance = cosine_distance(alert["embedding"], past["embedding"])
-                if distance > MAX_NEIGHBOUR_DISTANCE:
+                if distance > max_distance:
                     continue
                 verdict = verdicts.get((past.get("alert_id"), past.get("run_date")), {})
                 scored.append(
@@ -379,7 +390,8 @@ class LocalBQStore:
         return out
 
     def similar_within_run(
-        self, run_id: str, top_k: int = DEFAULT_SIBLING_K
+        self, run_id: str, top_k: int = DEFAULT_SIBLING_K,
+        max_distance: float = MAX_SIBLING_DISTANCE,
     ) -> dict[str, list[dict[str, Any]]]:
         rows = [a for a in self._load(ALERTS_TABLE)
                 if a.get("run_id") == run_id and a.get("embedding")]
@@ -390,7 +402,7 @@ class LocalBQStore:
                 if other["alert_id"] == alert["alert_id"]:
                     continue
                 distance = cosine_distance(alert["embedding"], other["embedding"])
-                if distance > MAX_SIBLING_DISTANCE:
+                if distance > max_distance:
                     continue
                 scored.append(_sibling({
                     "past_alert_id": other.get("alert_id", ""),
